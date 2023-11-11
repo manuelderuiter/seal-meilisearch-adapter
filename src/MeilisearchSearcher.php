@@ -17,6 +17,10 @@ use Meilisearch\Client;
 use Meilisearch\Exceptions\ApiException;
 use Schranz\Search\SEAL\Adapter\SearcherInterface;
 use Schranz\Search\SEAL\Marshaller\Marshaller;
+use Schranz\Search\SEAL\Schema\Exception\FieldByPathNotFoundException;
+use Schranz\Search\SEAL\Schema\Field\BooleanField;
+use Schranz\Search\SEAL\Schema\Field\IdentifierField;
+use Schranz\Search\SEAL\Schema\Field\TextField;
 use Schranz\Search\SEAL\Schema\Index;
 use Schranz\Search\SEAL\Search\Condition;
 use Schranz\Search\SEAL\Search\Result;
@@ -72,10 +76,10 @@ final class MeilisearchSearcher implements SearcherInterface
         $filters = [];
         foreach ($search->filters as $filter) {
             match (true) {
-                $filter instanceof Condition\IdentifierCondition => $filters[] = $index->getIdentifierField()->name . ' = "' . $filter->identifier . '"', // TODO escape?
+                $filter instanceof Condition\IdentifierCondition => $filters[] = $index->getIdentifierField()->name . ' = ' . $this->escapeFieldValue($index, $filter),
                 $filter instanceof Condition\SearchCondition => $query = $filter->query,
-                $filter instanceof Condition\EqualCondition => $filters[] = $filter->field . ' = ' . $filter->value, // TODO escape?
-                $filter instanceof Condition\NotEqualCondition => $filters[] = $filter->field . ' != ' . $filter->value, // TODO escape?
+                $filter instanceof Condition\EqualCondition => $filters[] = $filter->field . ' = ' . $this->escapeFieldValue($index, $filter),
+                $filter instanceof Condition\NotEqualCondition => $filters[] = $filter->field . ' != ' . $this->escapeFieldValue($index, $filter),
                 $filter instanceof Condition\GreaterThanCondition => $filters[] = $filter->field . ' > ' . $filter->value, // TODO escape?
                 $filter instanceof Condition\GreaterThanEqualCondition => $filters[] = $filter->field . ' >= ' . $filter->value, // TODO escape?
                 $filter instanceof Condition\LessThanCondition => $filters[] = $filter->field . ' < ' . $filter->value, // TODO escape?
@@ -122,5 +126,27 @@ final class MeilisearchSearcher implements SearcherInterface
         foreach ($hits as $hit) {
             yield $this->marshaller->unmarshall($index->fields, $hit);
         }
+    }
+
+    public function escapeFieldValue(Index $index, object $field): string|int|bool|float
+    {
+        $value = match(true) {
+            $field instanceof Condition\IdentifierCondition => $field->identifier,
+            default => $field->value,
+        };
+
+        try {
+            // Instead of guessing the type of the field, we use the type of the indexed field.
+            $indexedField = $index->getFieldByPath($field->field);
+        } catch (FieldByPathNotFoundException) {
+            return $value;
+        }
+
+        // Not every field type needs to be escaped.
+        return match(true) {
+            $indexedField instanceof TextField, $indexedField instanceof IdentifierField => '"' . $value . '"',
+            $indexedField instanceof BooleanField => $value ? 'true' : 'false',
+            default => $value,
+        };
     }
 }
